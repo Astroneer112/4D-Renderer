@@ -9,17 +9,25 @@
 #include <sstream>
 #include <filesystem>
 
-int WIDTH = 400;
-int HEIGHT = 400;
+int WIDTH = 800;
+int HEIGHT = 800;
 std::vector<uint32_t> pixels(WIDTH*HEIGHT, 0xFF000000);
 int frame = 0;
 
+struct Cam { vec4 pos, fwd, up, right; };
+
 const char* RECORD_PATH = "recording.bin";
 const size_t PIXEL_BYTES  = (size_t)WIDTH * HEIGHT * sizeof(uint32_t);
-const size_t RECORD_SIZE  = PIXEL_BYTES + sizeof(float) + sizeof(uint8_t);
+const size_t RECORD_SIZE  = PIXEL_BYTES + sizeof(Cam) + sizeof(float);
+
+static bool camStateIsSane(const Cam& c){
+    const float* v = reinterpret_cast<const float*>(&c);
+    for (int i = 0; i < 16; ++i) if (!std::isfinite(v[i])) return false;
+    return std::abs(c.fwd.mag()-1) < 1e-3f && std::abs(c.up.mag()-1) < 1e-3f && std::abs(c.right.mag()-1) < 1e-3f;
+}
 
 enum mode{LIVE,RECORD,REPLAY,CONTINUE};
-mode currentMode = RECORD;
+mode currentMode = REPLAY;
 
 std::ofstream saveFile;
 std::ifstream replayFile;
@@ -30,14 +38,14 @@ std::ifstream replayFile;
 
 
 
-struct Cam { vec4 pos, fwd, up, right; };
+
 Cam cam = Cam{
     vec4(-3.0f, 1, 0, 0),
     vec4(1,0,0,0).normalize(),
     vec4(0,1,0,0).normalize(),
     vec4(0,0,1,0).normalize()
 };
-vec4 camVelInit = vec4(0.2f,0,0,0);
+float camVel = 0.05f;
 
 //diagonal down
 /*
@@ -199,36 +207,37 @@ int main(int argc, char **argv) {
 
     std::atomic<vec4> campos;
     campos.store(cam.pos);
-    vec4 camVel = camVelInit;
 
     if (currentMode == RECORD) {
         saveFile.open(RECORD_PATH, std::ios::out | std::ios::binary | std::ios::trunc);
     }
     else if(currentMode == CONTINUE){
         uintmax_t fullRecords = 0;
-        {
-            std::ifstream scanFile(RECORD_PATH, std::ios::binary | std::ios::ate);
-            if (scanFile.is_open()) {
-                uintmax_t fileSize = static_cast<uintmax_t>(scanFile.tellg());
-                fullRecords = fileSize / RECORD_SIZE;
+        std::ifstream scanFile(RECORD_PATH, std::ios::binary | std::ios::ate);
+        if (scanFile.is_open()) {
+            uintmax_t fileSize = static_cast<uintmax_t>(scanFile.tellg());
+            fullRecords = fileSize / RECORD_SIZE;
 
-                if (fileSize % RECORD_SIZE != 0) {
-                    std::cout << "Dropping incomplete frame from end of file." << std::endl;
-                }
-
-                if (fullRecords > 0) {
-                    scanFile.seekg(static_cast<std::streamoff>((fullRecords - 1) * RECORD_SIZE + PIXEL_BYTES), std::ios::beg);
-                    vec4 savedPos;
-                    vec4 savedVel;
-                    scanFile.read(reinterpret_cast<char*>(&savedPos), sizeof(savedPos));
-                    scanFile.read(reinterpret_cast<char*>(&savedVel), sizeof(savedVel));
-
-                    campos.store(savedPos);
-                    camVel = savedVel;
-                }
-            } else {
-                std::cout << "No existing recording file found. Creating new session." << std::endl;
+            if (fileSize % RECORD_SIZE != 0) {
+                std::cout << "Dropping incomplete frame from end of file." << std::endl;
             }
+
+            if (fullRecords > 0) {
+                scanFile.seekg(static_cast<std::streamoff>((fullRecords - 1) * RECORD_SIZE + PIXEL_BYTES), std::ios::beg);
+                Cam saved;
+                scanFile.read(reinterpret_cast<char*>(&saved), sizeof(Cam));
+                if (scanFile && camStateIsSane(saved)) {
+                    cam = saved;
+                } else {
+                    std::cout << "Last record isn't a valid camera state (old format?) - starting fresh." << std::endl;
+                    fullRecords = 0;
+                }
+                float vel;
+                scanFile.read(reinterpret_cast<char*>(&vel), sizeof(float));
+                camVel = vel;
+            }
+        } else {
+            std::cout << "No existing recording file found. Creating new session." << std::endl;
         }
 
         { std::ofstream touch(RECORD_PATH, std::ios::binary | std::ios::app); }
@@ -261,11 +270,11 @@ int main(int argc, char **argv) {
 
 
         if (currentMode == REPLAY) {
-            float skipY;
-            uint8_t skipDir;
+            Cam skipcam;
+            float skipVel;
             if (replayFile.read(reinterpret_cast<char*>(pixels.data()), PIXEL_BYTES) &&
-                replayFile.read(reinterpret_cast<char*>(&skipY), sizeof(skipY)) &&
-                replayFile.read(reinterpret_cast<char*>(&skipDir), sizeof(skipDir))) {
+                replayFile.read(reinterpret_cast<char*>(&skipcam), sizeof(skipcam)) &&
+                replayFile.read(reinterpret_cast<char*>(&skipVel), sizeof(skipVel))) {
             } else {
                 std::cout << "Replay finished, looping" << std::endl;
                 replayFile.clear();
@@ -273,7 +282,7 @@ int main(int argc, char **argv) {
             }
         }
         else {
-            moveCamera(scene1, cam, camVel.mag());
+            moveCamera(scene1, cam, camVel);
 
             campos.store(cam.pos);
             std::cout << "(" << cam.pos.x << ", " << cam.pos.y << ", " << cam.pos.z << ", " << cam.pos.w << ")" << std::endl;
@@ -283,18 +292,16 @@ int main(int argc, char **argv) {
             while (rowsDone.load() < HEIGHT) {std::this_thread::yield();}
 
             if (currentMode == RECORD || currentMode == CONTINUE) {
-                vec4 posOut = campos.load();
-                vec4 velOut = camVel;
                 saveFile.write(reinterpret_cast<const char*>(pixels.data()), PIXEL_BYTES);
-                saveFile.write(reinterpret_cast<const char*>(&posOut), sizeof(posOut));
-                saveFile.write(reinterpret_cast<const char*>(&velOut), sizeof(velOut));
+                saveFile.write(reinterpret_cast<const char*>(&cam), sizeof(Cam));
+                saveFile.write(reinterpret_cast<const char*>(&camVel), sizeof(camVel));
                 saveFile.flush();
             }
         }
 
         SDL_UpdateTexture(texture, NULL, pixels.data(), WIDTH * sizeof(uint32_t));
         if(currentMode == REPLAY){
-            while(deltaTime < 0.01f){
+            while(deltaTime < 0.02f){
                 auto currentTime = std::chrono::steady_clock::now();
                 deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
                 std::this_thread::sleep_for(std::chrono::microseconds(10));
