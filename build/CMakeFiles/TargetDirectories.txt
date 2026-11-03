@@ -1,0 +1,7 @@
+/home/redfalcon/projects/FourDRenderer/build/CMakeFiles/fourdrenderer.dir
+/home/redfalcon/projects/FourDRenderer/build/CMakeFiles/edit_cache.dir
+/home/redfalcon/projects/FourDRenderer/build/CMakeFiles/rebuild_cache.dir
+/home/redfalcon/projects/FourDRenderer/build/CMakeFiles/list_install_components.dir
+/home/redfalcon/projects/FourDRenderer/build/CMakeFiles/install.dir
+/home/redfalcon/projects/FourDRenderer/build/CMakeFiles/install/local.dir
+/home/redfalcon/projects/FourDRenderer/build/CMakeFiles/install/strip.dir

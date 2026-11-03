@@ -1,6 +1,311 @@
+#include <SDL2/SDL.h>
 #include <iostream>
+#include <vector>
+#include <thread>
+#include "4DFunctions.h"
+#include <atomic>
+#include <memory>
+#include <fstream>
+#include <sstream>
+#include <filesystem>
+
+int WIDTH = 400;
+int HEIGHT = 400;
+std::vector<uint32_t> pixels(WIDTH*HEIGHT, 0xFF000000);
+int frame = 0;
+
+const char* RECORD_PATH = "recording.bin";
+const size_t PIXEL_BYTES  = (size_t)WIDTH * HEIGHT * sizeof(uint32_t);
+const size_t RECORD_SIZE  = PIXEL_BYTES + sizeof(float) + sizeof(uint8_t);
+
+enum mode{LIVE,RECORD,REPLAY,CONTINUE};
+mode currentMode = RECORD;
+
+std::ofstream saveFile;
+std::ifstream replayFile;
+
+
+
+//straight down x axis
+
+vec4 camposInit = vec4(-3.0f, 1, 0, 0);
+vec4 forward = vec4(1,0,0,0).normalize();
+vec4 up      = vec4(0,1,0,0).normalize();
+vec4 right   = vec4(0,0,1,0).normalize();
+vec4 camVelInit = vec4(0.1f,0,0,0);
+
+//diagonal down
+/*
+vec4 camposInit = vec4(-1.0f, 2, 0, 0);
+vec4 forward = vec4(0.5f,-0.5f,0,0).normalize();
+vec4 up      = vec4(0.5f,0.5f,0,0).normalize();
+vec4 right   = vec4(0,0,1,0).normalize();
+*/
+
+void pixel_space(std::atomic<int>& rowCounter, std::atomic<int>& rowsDone, sdf& scene, std::atomic<vec4>& campos, std::atomic<bool>& quitFlag){
+    while (!quitFlag.load()) {
+        int y = rowCounter.fetch_add(1);
+        if (y >= HEIGHT) {
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            continue;
+        } else{
+            int x = 0;
+
+            while(x < WIDTH){
+                float screenX = ((float)x / (float)WIDTH) - 0.5f;
+                float screenY = 0.5f - ((float)y / (float)HEIGHT);
+
+                sdf_return dist = scene.raymarch_space(campos, (forward + (right * screenX) + (up * screenY)).normalize());
+
+                if(dist.dist == -1){
+                    pixels[y * WIDTH + x] = (uint32_t) 0x00000000;
+                } else{
+                    float brightness = 1.0f - (dist.dist / 10.0f);
+                    if (brightness < 0.0f){brightness = 0.0f;}
+                    if (brightness > 1.0f){brightness = 1.0f;}
+
+                    uint8_t r = (dist.color >> 16) & 0xFF;
+                    uint8_t g = (dist.color >> 8)  & 0xFF;
+                    uint8_t b = (dist.color) & 0xFF;
+
+                    uint8_t shadedR = static_cast<uint8_t>(r * brightness);
+                    uint8_t shadedG = static_cast<uint8_t>(g * brightness);
+                    uint8_t shadedB = static_cast<uint8_t>(b * brightness);
+
+                    pixels[y * WIDTH + x] = (0xFF << 24) | (shadedR << 16) | (shadedG << 8) | shadedB;
+                }
+                x++;
+            }
+            rowsDone.fetch_add(1);
+        }
+    }
+}
+
+void pixel_real(std::atomic<int>& rowCounter, std::atomic<int>& rowsDone, sdf& scene, std::atomic<vec4>& campos, std::atomic<bool>& quitFlag){
+    while (!quitFlag.load()) {
+        int y = rowCounter.fetch_add(1);
+        if (y >= HEIGHT) {
+            std::this_thread::sleep_for(std::chrono::microseconds(100));
+            continue;
+        } else{
+            int x = 0;
+
+            while(x < WIDTH){
+                float screenX = ((float)x / (float)WIDTH) - 0.5f;
+                float screenY = 0.5f - ((float)y / (float)HEIGHT);
+
+                sdf_return dist = scene.raymarch(campos, (forward + (right * screenX) + (up * screenY)).normalize());
+
+                if(dist.dist == -1){
+                    pixels[y * WIDTH + x] = (uint32_t) 0x00000000;
+                } else{
+                    float brightness = 1.0f - (dist.dist / 10.0f);
+                    if (brightness < 0.0f){brightness = 0.0f;}
+                    if (brightness > 1.0f){brightness = 1.0f;}
+
+                    /*
+                    uint8_t colorVal = static_cast<uint8_t>(brightness * 255.0f);
+
+                    pixels[y * WIDTH + x] = (0xFF << 24) | (colorVal << 16) | (colorVal << 8) | colorVal;*/
+
+
+                    uint8_t r = (dist.color >> 16) & 0xFF;
+                    uint8_t g = (dist.color >> 8)  & 0xFF;
+                    uint8_t b = (dist.color) & 0xFF;
+
+                    uint8_t shadedR = static_cast<uint8_t>(r * brightness);
+                    uint8_t shadedG = static_cast<uint8_t>(g * brightness);
+                    uint8_t shadedB = static_cast<uint8_t>(b * brightness);
+
+                    pixels[y * WIDTH + x] = (0xFF << 24) | (shadedR << 16) | (shadedG << 8) | shadedB;
+                }
+                //std::cout << "finished pixel: " << y * WIDTH + x << std::endl;
+                x++;
+            }
+            rowsDone.fetch_add(1);
+        }
+    }
+}
 
 int main(int argc, char **argv) {
-    std::cout << "Hello, world!" << std::endl;
+
+    auto lastTime = std::chrono::steady_clock::now();
+    float deltaTime = 0;
+    float totalTime = 0;
+
+    //std::vector<float>* dists = new std::vector<float>();
+
+    if(SDL_Init(SDL_INIT_VIDEO) < 0){
+        std::cout << "SDL Failed to Initialize" << std::endl;
+        return -1;
+    }
+
+    SDL_Window* window = SDL_CreateWindow("Render", SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED, WIDTH, HEIGHT, SDL_WINDOW_SHOWN);
+
+    if(!window){
+        std::cout << "window could not be created" << std::endl;
+        return -1;
+    }
+
+    SDL_Renderer* renderer = SDL_CreateRenderer(window, -1, SDL_RENDERER_SOFTWARE);
+
+    SDL_Texture* texture = SDL_CreateTexture(renderer, SDL_PIXELFORMAT_ARGB8888, SDL_TEXTUREACCESS_STREAMING, WIDTH, HEIGHT);
+
+    bool quit = false;
+    SDL_Event e;
+
+    unsigned int num_threads = std::thread::hardware_concurrency();
+    if(num_threads == 0){num_threads = 1;}
+
+
+    std::atomic<int> rowCounter(HEIGHT);
+    std::atomic<int> rowsDone(HEIGHT);
+    std::atomic<bool> workerQuit(false);
+    std::vector<std::thread> pool;
+
+    sdf scene1 = sdf();
+
+    std::atomic<vec4> campos;
+    campos.store(camposInit);
+    vec4 camVel = camVelInit;
+
+    if (currentMode == RECORD) {
+        saveFile.open(RECORD_PATH, std::ios::out | std::ios::binary | std::ios::trunc);
+    }
+    else if(currentMode == CONTINUE){
+        uintmax_t fullRecords = 0;
+        {
+            std::ifstream scanFile(RECORD_PATH, std::ios::binary | std::ios::ate);
+            if (scanFile.is_open()) {
+                uintmax_t fileSize = static_cast<uintmax_t>(scanFile.tellg());
+                fullRecords = fileSize / RECORD_SIZE;
+
+                if (fileSize % RECORD_SIZE != 0) {
+                    std::cout << "Dropping incomplete frame from end of file." << std::endl;
+                }
+
+                if (fullRecords > 0) {
+                    scanFile.seekg(static_cast<std::streamoff>((fullRecords - 1) * RECORD_SIZE + PIXEL_BYTES), std::ios::beg);
+                    vec4 savedPos;
+                    vec4 savedVel;
+                    scanFile.read(reinterpret_cast<char*>(&savedPos), sizeof(savedPos));
+                    scanFile.read(reinterpret_cast<char*>(&savedVel), sizeof(savedVel));
+
+                    campos.store(savedPos);
+                    camVel = savedVel;
+                }
+            } else {
+                std::cout << "No existing recording file found. Creating new session." << std::endl;
+            }
+        }
+
+        { std::ofstream touch(RECORD_PATH, std::ios::binary | std::ios::app); }
+
+        saveFile.open(RECORD_PATH, std::ios::in | std::ios::out | std::ios::binary);
+        saveFile.seekp(static_cast<std::streamoff>(fullRecords * RECORD_SIZE), std::ios::beg);
+    }
+    else if (currentMode == REPLAY) {
+        replayFile.open(RECORD_PATH, std::ios::in | std::ios::binary);
+        if (!replayFile.is_open()) {
+            std::cout << "Failed to open recording.txt" << std::endl;
+            currentMode = LIVE;
+        }
+    }
+
+    for (int i = 0; i < num_threads; ++i) {
+        pool.emplace_back(pixel_real, std::ref(rowCounter), std::ref(rowsDone), std::ref(scene1), std::ref(campos), std::ref(workerQuit));
+    }
+
+    while(!quit){
+        while (SDL_PollEvent(&e)) {
+            if (e.type == SDL_QUIT) quit = true;
+        }
+        auto currentTime = std::chrono::steady_clock::now();
+        deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
+        totalTime += deltaTime;
+        lastTime = currentTime;
+        frame+=1;
+        std::cout << "time for last frame: " << deltaTime << std::endl;
+
+
+        if (currentMode == REPLAY) {
+            float skipY;
+            uint8_t skipDir;
+            if (replayFile.read(reinterpret_cast<char*>(pixels.data()), PIXEL_BYTES) &&
+                replayFile.read(reinterpret_cast<char*>(&skipY), sizeof(skipY)) &&
+                replayFile.read(reinterpret_cast<char*>(&skipDir), sizeof(skipDir))) {
+            } else {
+                std::cout << "Replay finished, looping" << std::endl;
+                replayFile.clear();
+                replayFile.seekg(0, std::ios::beg);
+            }
+        }
+        else {
+            //need velocity aplication and space curving here
+            float moved = 0;
+            float target = camVel.mag();
+
+            float dist = scene1.scene_sdf(campos).dist;
+            vec4 dir = camVel.normalize();
+
+            while(moved < target){
+                sdf_return throat = scene1.sdf_extrude_sphere(campos, vec4(0,1,0,scene1.throatLength/2.0f), scene1.wormholeRad, scene1.throatLength);
+
+                float step = std::min(std::min(dist, std::max(throat.dist - scene1.sharpness, 0.005f)), target);
+                if(step < 0.001) step = 0.001;
+
+                campos.store(campos.load() + dir * step);
+                moved += step;
+
+                vec4 n = scene1.spaceNorm(campos.load());
+                if (n.mag() > 0.0f) {
+                    vec4 t = dir - n * dir.dot(n);
+                    if (t.mag() > 1e-6f) dir = t.normalize();
+                }
+                dist = scene1.scene_sdf(campos).dist;
+            }
+            std::cout << "(" << campos.load().x << ", " << campos.load().y << ", " << campos.load().z << ", " << campos.load().w << ")" << std::endl;
+
+
+            rowsDone.store(0);
+            rowCounter.store(0);
+            while (rowsDone.load() < HEIGHT) {std::this_thread::yield();}
+
+            if (currentMode == RECORD || currentMode == CONTINUE) {
+                vec4 posOut = campos.load();
+                vec4 velOut = camVel;
+                saveFile.write(reinterpret_cast<const char*>(pixels.data()), PIXEL_BYTES);
+                saveFile.write(reinterpret_cast<const char*>(&posOut), sizeof(posOut));
+                saveFile.write(reinterpret_cast<const char*>(&velOut), sizeof(velOut));
+                saveFile.flush();
+            }
+        }
+
+        SDL_UpdateTexture(texture, NULL, pixels.data(), WIDTH * sizeof(uint32_t));
+        if(currentMode == REPLAY){
+            while(deltaTime < 0.01f){
+                auto currentTime = std::chrono::steady_clock::now();
+                deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
+                std::this_thread::sleep_for(std::chrono::microseconds(10));
+            }
+        }
+
+        SDL_RenderClear(renderer);
+        SDL_RenderCopy(renderer, texture, NULL, NULL);
+        SDL_RenderPresent(renderer);
+    }
+
+    workerQuit.store(true);
+    for (auto& t : pool) {
+        if (t.joinable()) {
+            t.join();
+        }
+    }
+
+    SDL_DestroyTexture(texture);
+    SDL_DestroyRenderer(renderer);
+    SDL_DestroyWindow(window);
+    SDL_Quit();
+
     return 0;
 }

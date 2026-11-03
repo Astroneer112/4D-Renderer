@@ -1,0 +1,8 @@
+[
+{
+  "directory": "/home/redfalcon/projects/FourDRenderer/build",
+  "command": "/usr/bin/c++  -I/usr/include/SDL2 -g -D_REENTRANT -o CMakeFiles/fourdrenderer.dir/main.cpp.o -c /home/redfalcon/projects/FourDRenderer/main.cpp",
+  "file": "/home/redfalcon/projects/FourDRenderer/main.cpp",
+  "output": "CMakeFiles/fourdrenderer.dir/main.cpp.o"
+}
+]
