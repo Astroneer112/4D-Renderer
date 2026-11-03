@@ -201,17 +201,17 @@ public:
     float sharpness = 0.3f;
     float throatLength = 1;
     float wormholeRad = 0.5f;
-    vec4 wormholePos = vec4(-3,1,0,throatLength/2.0f);
+    vec4 wormholePos = vec4(0,1,0,throatLength/2.0f);
 
     sdf(){}
     /*
     sdf_return sdf_4d_slice(vec4 p, float w){
         return std::abs(p.w - w);
     }
+    */
     sdf_return sdf_sphere_4d(vec4 p, vec4 c, float r){
         return (p - c).mag() - r;
     }
-    */
     sdf_return sdf_extrude_sphere(vec4 p, vec4 c, float r, float h){
         vec3 pDist = vec3(p.x - c.x, p.y - c.y, p.z - c.z);
         float d = pDist.mag() - r;
@@ -224,7 +224,7 @@ public:
         return std::min(std::max(d, dw), 0.0f) + sqrt(ext_d * ext_d + ext_dw * ext_dw);
     }
 
-    sdf_return sdf_plane(vec4 p, vec4 c, vec4 n1, vec4 n2){
+    sdf_return sdf_plane_2d(vec4 p, vec4 c, vec4 n1, vec4 n2){
         return sdf_return(sqrt((p-c).dot(n1) * (p-c).dot(n1) + (p-c).dot(n2) * (p-c).dot(n2)));
     }
 
@@ -251,36 +251,35 @@ public:
         return union_round(slicescut, wormhole, sharpness);
         */
 
-        float slab0 = std::abs(p.w - throatLength/2) - throatLength/2;
-        float slab1 = std::abs(p.w - (throatLength + throatLength + 2.0f)/2) - 1.0f;
-        float slabs = std::min(slab0, slab1);
-        float wormhole0 = sdf_extrude_sphere(p, wormholePos, wormholeRad, throatLength).dist;
-        float wormhole1 = sdf_extrude_sphere(p, wormholePos + vec4(3,0,0,0), wormholeRad, throatLength + 2).dist;
-        float wormholes = std::min(wormhole0, wormhole1);
+        /*
+        sdf_return space0 = std::abs(p.w - throatLength/2) - throatLength/2;
+        sdf_return wormhole0 = sdf_extrude_sphere(p, wormholePos, wormholeRad, throatLength);
+        //float subtract = std::min(slice, wormhole0);
 
-        float a = slabs;
-        float b = -wormholes;
+        sdf_return a = space0;
+        sdf_return b = -wormhole0;
 
-        float ux = std::max(sharpness + a, 0.0f);
-        float uy = std::max(sharpness + b, 0.0f);
-        float d = std::min(-sharpness, std::max(a, b)) + std::sqrt(ux*ux + uy*uy);
+        return union_round(a,b,sharpness);
+        */
 
-        uint32_t col;
-        if (b > a) col = 0xFF0000FF;                        // tube wall
-        else col = (p.w < throatLength/2) ? 0xFFFF0000 : 0xFF00FF00;  // slice 0 red, slice 1 green
-        return sdf_return(d, col);
+        sdf_return space0 = sdf_sphere_4d(p, vec4(0,0,0,-10), 10);
+        space0.color = 0xFFFF0000;
+        sdf_return space1 = sdf_sphere_4d(p, vec4(0,0,0,10 + throatLength), 10);
+        space1.color = 0xFF00FF00;
+        sdf_return wormhole0 = sdf_extrude_sphere(p, wormholePos, wormholeRad, throatLength);
+        //float subtract = std::min(slice, wormhole0);
+
+        sdf_return a = space0.min(space1);
+        sdf_return b = wormhole0;
+
+        return union_round(a,b,sharpness);
     }
 
     sdf_return scene_sdf(vec4 p){
-        sdf_return plane0 = sdf_plane(p, vec4(0,0,0,0), vec4(0,0,0,1), vec4(0,1,0,0));
-        plane0.color = 0xFFFF0000;
-        sdf_return plane1 = sdf_plane(p, vec4(0,0,0,throatLength), vec4(0,0,0,1), vec4(0,1,0,0));
-        plane1.color = 0xFF00FF00;
+        sdf_return floor = p.y;
+        floor.color = space_sdf(p).color;
 
-        sdf_return plane2 = sdf_plane(p, vec4(0,0,0,throatLength + 2), vec4(0,0,0,1), vec4(0,1,0,0));
-        plane2.color = 0xFF0000FF;
-
-        return plane0.min(plane1).min(plane2);
+        return floor;
 
     }
 

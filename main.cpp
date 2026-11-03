@@ -40,7 +40,7 @@ std::ifstream replayFile;
 
 
 Cam cam = Cam{
-    vec4(-3.0f, 1, 0, 0),
+    vec4(-3, 1, 0, 0),
     vec4(1,0,0,0).normalize(),
     vec4(0,1,0,0).normalize(),
     vec4(0,0,1,0).normalize(),
