@@ -291,6 +291,7 @@ public:
     sdf_return raymarch(vec4 p, vec4 dir){
         float dist = scene_sdf(p).dist;
         sdf_return moved = sdf_return(0);
+        int minCounter = 0;
 
         while(dist > 0.001){
             if(moved.dist >= 100){
@@ -303,6 +304,14 @@ public:
 
             p = p + dir * step;
             moved.dist += step;
+            if(step == 0.005f){
+                minCounter += 1;
+                if(minCounter >= 5000){
+                    return -1;
+                }
+            } else{
+                minCounter = 0;
+            }
 
             for (int i = 0; i < 3; ++i) {
                 float d = space_sdf(p).dist;

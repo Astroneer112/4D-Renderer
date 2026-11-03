@@ -28,19 +28,51 @@ std::ifstream replayFile;
 
 //straight down x axis
 
-vec4 camposInit = vec4(-3.0f, 1, 0, 0);
-vec4 forward = vec4(1,0,0,0).normalize();
-vec4 up      = vec4(0,1,0,0).normalize();
-vec4 right   = vec4(0,0,1,0).normalize();
-vec4 camVelInit = vec4(0.1f,0,0,0);
+
+
+struct Cam { vec4 pos, fwd, up, right; };
+Cam cam = Cam{
+    vec4(-3.0f, 1, 0, 0),
+    vec4(1,0,0,0).normalize(),
+    vec4(0,1,0,0).normalize(),
+    vec4(0,0,1,0).normalize()
+};
+vec4 camVelInit = vec4(0.2f,0,0,0);
 
 //diagonal down
 /*
-vec4 camposInit = vec4(-1.0f, 2, 0, 0);
-vec4 forward = vec4(0.5f,-0.5f,0,0).normalize();
-vec4 up      = vec4(0.5f,0.5f,0,0).normalize();
-vec4 right   = vec4(0,0,1,0).normalize();
-*/
+ v e*c4 camposInit = vec4(-1.0f, 2, 0, 0);
+ vec4 forward = vec4(0.5f,-0.5f,0,0).normalize();
+ vec4 up      = vec4(0.5f,0.5f,0,0).normalize();
+ vec4 right   = vec4(0,0,1,0).normalize();
+ */
+
+void moveCamera(sdf& s, Cam& c, float dist){
+    for(float moved = 0; moved < dist; ){
+        float step = std::min(dist - moved, 0.01f);
+        c.pos = c.pos + c.fwd * step;  moved += step;
+
+        for(int i = 0; i < 3; ++i){
+            float d = s.space_sdf(c.pos).dist;
+            if(std::abs(d) < 1e-5f) break;
+            vec4 n = s.spaceNorm(c.pos);
+            if(n.mag() == 0.0f) break;
+            c.pos = c.pos - n * d;
+        }
+        vec4 n = s.spaceNorm(c.pos);
+        if(n.mag() > 0.0f){
+            vec4 f = c.fwd   - n * c.fwd.dot(n);
+            vec4 u = c.up    - n * c.up.dot(n);
+            vec4 r = c.right - n * c.right.dot(n);
+            if(f.mag() > 1e-6f) c.fwd = f;
+            if(u.mag() > 1e-6f) c.up = u;
+            if(r.mag() > 1e-6f) c.right = r;
+        }
+        c.fwd   = c.fwd.normalize();
+        c.up    = (c.up - c.fwd * c.up.dot(c.fwd)).normalize();
+        c.right = (c.right - c.fwd * c.right.dot(c.fwd) - c.up * c.right.dot(c.up)).normalize();
+    }
+}
 
 void pixel_space(std::atomic<int>& rowCounter, std::atomic<int>& rowsDone, sdf& scene, std::atomic<vec4>& campos, std::atomic<bool>& quitFlag){
     while (!quitFlag.load()) {
@@ -55,7 +87,7 @@ void pixel_space(std::atomic<int>& rowCounter, std::atomic<int>& rowsDone, sdf& 
                 float screenX = ((float)x / (float)WIDTH) - 0.5f;
                 float screenY = 0.5f - ((float)y / (float)HEIGHT);
 
-                sdf_return dist = scene.raymarch_space(campos, (forward + (right * screenX) + (up * screenY)).normalize());
+                sdf_return dist = scene.raymarch_space(campos, (cam.fwd + (cam.right * screenX) + (cam.up * screenY)).normalize());
 
                 if(dist.dist == -1){
                     pixels[y * WIDTH + x] = (uint32_t) 0x00000000;
@@ -94,7 +126,7 @@ void pixel_real(std::atomic<int>& rowCounter, std::atomic<int>& rowsDone, sdf& s
                 float screenX = ((float)x / (float)WIDTH) - 0.5f;
                 float screenY = 0.5f - ((float)y / (float)HEIGHT);
 
-                sdf_return dist = scene.raymarch(campos, (forward + (right * screenX) + (up * screenY)).normalize());
+                sdf_return dist = scene.raymarch(campos, (cam.fwd + (cam.right * screenX) + (cam.up * screenY)).normalize());
 
                 if(dist.dist == -1){
                     pixels[y * WIDTH + x] = (uint32_t) 0x00000000;
@@ -166,7 +198,7 @@ int main(int argc, char **argv) {
     sdf scene1 = sdf();
 
     std::atomic<vec4> campos;
-    campos.store(camposInit);
+    campos.store(cam.pos);
     vec4 camVel = camVelInit;
 
     if (currentMode == RECORD) {
@@ -241,31 +273,10 @@ int main(int argc, char **argv) {
             }
         }
         else {
-            //need velocity aplication and space curving here
-            float moved = 0;
-            float target = camVel.mag();
+            moveCamera(scene1, cam, camVel.mag());
 
-            float dist = scene1.scene_sdf(campos).dist;
-            vec4 dir = camVel.normalize();
-
-            while(moved < target){
-                sdf_return throat = scene1.sdf_extrude_sphere(campos, vec4(0,1,0,scene1.throatLength/2.0f), scene1.wormholeRad, scene1.throatLength);
-
-                float step = std::min(std::min(dist, std::max(throat.dist - scene1.sharpness, 0.005f)), target);
-                if(step < 0.001) step = 0.001;
-
-                campos.store(campos.load() + dir * step);
-                moved += step;
-
-                vec4 n = scene1.spaceNorm(campos.load());
-                if (n.mag() > 0.0f) {
-                    vec4 t = dir - n * dir.dot(n);
-                    if (t.mag() > 1e-6f) dir = t.normalize();
-                }
-                dist = scene1.scene_sdf(campos).dist;
-            }
-            std::cout << "(" << campos.load().x << ", " << campos.load().y << ", " << campos.load().z << ", " << campos.load().w << ")" << std::endl;
-
+            campos.store(cam.pos);
+            std::cout << "(" << cam.pos.x << ", " << cam.pos.y << ", " << cam.pos.z << ", " << cam.pos.w << ")" << std::endl;
 
             rowsDone.store(0);
             rowCounter.store(0);
