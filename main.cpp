@@ -9,16 +9,16 @@
 #include <sstream>
 #include <filesystem>
 
-int WIDTH = 800;
-int HEIGHT = 800;
+int WIDTH = 100;
+int HEIGHT = 100;
 std::vector<uint32_t> pixels(WIDTH*HEIGHT, 0xFF000000);
 int frame = 0;
 
-struct Cam { vec4 pos, fwd, up, right; };
+struct Cam { vec4 pos, fwd, up, right, vel; };
 
 const char* RECORD_PATH = "recording.bin";
 const size_t PIXEL_BYTES  = (size_t)WIDTH * HEIGHT * sizeof(uint32_t);
-const size_t RECORD_SIZE  = PIXEL_BYTES + sizeof(Cam) + sizeof(float);
+const size_t RECORD_SIZE  = PIXEL_BYTES + sizeof(Cam);
 
 static bool camStateIsSane(const Cam& c){
     const float* v = reinterpret_cast<const float*>(&c);
@@ -27,7 +27,7 @@ static bool camStateIsSane(const Cam& c){
 }
 
 enum mode{LIVE,RECORD,REPLAY,CONTINUE};
-mode currentMode = REPLAY;
+mode currentMode = LIVE;
 
 std::ofstream saveFile;
 std::ifstream replayFile;
@@ -43,9 +43,10 @@ Cam cam = Cam{
     vec4(-3.0f, 1, 0, 0),
     vec4(1,0,0,0).normalize(),
     vec4(0,1,0,0).normalize(),
-    vec4(0,0,1,0).normalize()
+    vec4(0,0,1,0).normalize(),
+    vec4(0.05f, 0,0,0)
 };
-float camVel = 0.05f;
+
 
 //diagonal down
 /*
@@ -55,11 +56,26 @@ float camVel = 0.05f;
  vec4 right   = vec4(0,0,1,0).normalize();
  */
 
-void moveCamera(sdf& s, Cam& c, float dist){
-    for(float moved = 0; moved < dist; ){
-        float step = std::min(dist - moved, 0.01f);
-        c.pos = c.pos + c.fwd * step;  moved += step;
+static vec4 rotAB(const vec4& v, const vec4& a, const vec4& b){
+    float c = a.dot(b);
+    vec4 w = b - a * c;
+    float s = w.mag();
+    if(s < 1e-7f) return v;
+    w = w / s;
+    float va = v.dot(a), vw = v.dot(w);
+    return v + a * ((c - 1.0f) * va - s * vw) + w * (s * va + (c - 1.0f) * vw);
+}
 
+void moveCamera(sdf& s, Cam& c){
+    float speed = c.vel.mag();
+    if(speed < 1e-9f) return;
+    vec4 dir = c.vel / speed;
+    vec4 prevN = s.spaceNorm(c.pos);
+    for(float moved = 0; moved < speed; ){
+        float step = std::min(speed - moved, 0.01f);
+        c.pos = c.pos + dir * step;  moved += step;
+
+        // snap back onto the surface
         for(int i = 0; i < 3; ++i){
             float d = s.space_sdf(c.pos).dist;
             if(std::abs(d) < 1e-5f) break;
@@ -69,17 +85,20 @@ void moveCamera(sdf& s, Cam& c, float dist){
         }
         vec4 n = s.spaceNorm(c.pos);
         if(n.mag() > 0.0f){
-            vec4 f = c.fwd   - n * c.fwd.dot(n);
-            vec4 u = c.up    - n * c.up.dot(n);
-            vec4 r = c.right - n * c.right.dot(n);
-            if(f.mag() > 1e-6f) c.fwd = f;
-            if(u.mag() > 1e-6f) c.up = u;
-            if(r.mag() > 1e-6f) c.right = r;
+            if(prevN.mag() > 0.0f){
+                c.fwd = rotAB(c.fwd, prevN, n);  c.up = rotAB(c.up, prevN, n);
+                c.right = rotAB(c.right, prevN, n);  dir = rotAB(dir, prevN, n);
+            }
+            prevN = n;
+            auto tang = [&](vec4 v){ return v - n * v.dot(n); };
+            c.fwd = tang(c.fwd); c.up = tang(c.up); c.right = tang(c.right); dir = tang(dir);
         }
+        dir     = dir.normalize();
         c.fwd   = c.fwd.normalize();
         c.up    = (c.up - c.fwd * c.up.dot(c.fwd)).normalize();
         c.right = (c.right - c.fwd * c.right.dot(c.fwd) - c.up * c.right.dot(c.up)).normalize();
     }
+    c.vel = dir * speed;
 }
 
 void pixel_space(std::atomic<int>& rowCounter, std::atomic<int>& rowsDone, sdf& scene, std::atomic<vec4>& campos, std::atomic<bool>& quitFlag){
@@ -232,9 +251,6 @@ int main(int argc, char **argv) {
                     std::cout << "Last record isn't a valid camera state (old format?) - starting fresh." << std::endl;
                     fullRecords = 0;
                 }
-                float vel;
-                scanFile.read(reinterpret_cast<char*>(&vel), sizeof(float));
-                camVel = vel;
             }
         } else {
             std::cout << "No existing recording file found. Creating new session." << std::endl;
@@ -271,10 +287,8 @@ int main(int argc, char **argv) {
 
         if (currentMode == REPLAY) {
             Cam skipcam;
-            float skipVel;
             if (replayFile.read(reinterpret_cast<char*>(pixels.data()), PIXEL_BYTES) &&
-                replayFile.read(reinterpret_cast<char*>(&skipcam), sizeof(skipcam)) &&
-                replayFile.read(reinterpret_cast<char*>(&skipVel), sizeof(skipVel))) {
+                replayFile.read(reinterpret_cast<char*>(&skipcam), sizeof(skipcam))) {
             } else {
                 std::cout << "Replay finished, looping" << std::endl;
                 replayFile.clear();
@@ -282,7 +296,7 @@ int main(int argc, char **argv) {
             }
         }
         else {
-            moveCamera(scene1, cam, camVel);
+            moveCamera(scene1, cam);
 
             campos.store(cam.pos);
             std::cout << "(" << cam.pos.x << ", " << cam.pos.y << ", " << cam.pos.z << ", " << cam.pos.w << ")" << std::endl;
@@ -294,14 +308,13 @@ int main(int argc, char **argv) {
             if (currentMode == RECORD || currentMode == CONTINUE) {
                 saveFile.write(reinterpret_cast<const char*>(pixels.data()), PIXEL_BYTES);
                 saveFile.write(reinterpret_cast<const char*>(&cam), sizeof(Cam));
-                saveFile.write(reinterpret_cast<const char*>(&camVel), sizeof(camVel));
                 saveFile.flush();
             }
         }
 
         SDL_UpdateTexture(texture, NULL, pixels.data(), WIDTH * sizeof(uint32_t));
         if(currentMode == REPLAY){
-            while(deltaTime < 0.03f){
+            while(deltaTime < 0.05f){
                 auto currentTime = std::chrono::steady_clock::now();
                 deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
                 std::this_thread::sleep_for(std::chrono::microseconds(10));

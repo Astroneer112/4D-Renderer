@@ -201,6 +201,7 @@ public:
     float sharpness = 0.3f;
     float throatLength = 1;
     float wormholeRad = 0.5f;
+    vec4 wormholePos = vec4(-3,1,0,throatLength/2.0f);
 
     sdf(){}
     /*
@@ -250,10 +251,15 @@ public:
         return union_round(slicescut, wormhole, sharpness);
         */
 
-        float slab = std::abs(p.w - throatLength/2) - throatLength/2;   // <0 between the slices
-        float tube = sdf_extrude_sphere(p, vec4(0,1,0,throatLength/2), wormholeRad, throatLength).dist; // <0 inside tube
-        float a = slab;
-        float b = -tube;                  // solid = slab AND NOT tube
+        float slab0 = std::abs(p.w - throatLength/2) - throatLength/2;
+        float slab1 = std::abs(p.w - (throatLength + throatLength + 2.0f)/2) - 1.0f;
+        float slabs = std::min(slab0, slab1);
+        float wormhole0 = sdf_extrude_sphere(p, wormholePos, wormholeRad, throatLength).dist;
+        float wormhole1 = sdf_extrude_sphere(p, wormholePos + vec4(3,0,0,0), wormholeRad, throatLength + 2).dist;
+        float wormholes = std::min(wormhole0, wormhole1);
+
+        float a = slabs;
+        float b = -wormholes;
 
         float ux = std::max(sharpness + a, 0.0f);
         float uy = std::max(sharpness + b, 0.0f);
@@ -268,9 +274,13 @@ public:
     sdf_return scene_sdf(vec4 p){
         sdf_return plane0 = sdf_plane(p, vec4(0,0,0,0), vec4(0,0,0,1), vec4(0,1,0,0));
         plane0.color = 0xFFFF0000;
-        sdf_return plane1 = sdf_plane(p, vec4(0,0,0,1), vec4(0,0,0,1), vec4(0,1,0,0));
+        sdf_return plane1 = sdf_plane(p, vec4(0,0,0,throatLength), vec4(0,0,0,1), vec4(0,1,0,0));
         plane1.color = 0xFF00FF00;
-        return plane0.min(plane1);
+
+        sdf_return plane2 = sdf_plane(p, vec4(0,0,0,throatLength + 2), vec4(0,0,0,1), vec4(0,1,0,0));
+        plane2.color = 0xFF0000FF;
+
+        return plane0.min(plane1).min(plane2);
 
     }
 
@@ -298,15 +308,16 @@ public:
                 return -1;
             }
 
-            sdf_return throat = sdf_extrude_sphere(p, vec4(0,1,0,throatLength/2.0f), wormholeRad, throatLength);
+            sdf_return throat = sdf_extrude_sphere(p, wormholePos, wormholeRad, throatLength);
 
-            float step = std::min(dist, std::max(throat.dist - sharpness, 0.005f));
+            float minStep = std::min(0.005f, 0.5f * sharpness);
+            float step = std::min(dist, std::max(throat.dist - sharpness, minStep));
 
             p = p + dir * step;
             moved.dist += step;
             if(step == 0.005f){
                 minCounter += 1;
-                if(minCounter >= 5000){
+                if(minCounter >= 2000){
                     return -1;
                 }
             } else{
