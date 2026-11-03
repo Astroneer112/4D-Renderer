@@ -301,7 +301,7 @@ int main(int argc, char **argv) {
 
         SDL_UpdateTexture(texture, NULL, pixels.data(), WIDTH * sizeof(uint32_t));
         if(currentMode == REPLAY){
-            while(deltaTime < 0.02f){
+            while(deltaTime < 0.03f){
                 auto currentTime = std::chrono::steady_clock::now();
                 deltaTime = std::chrono::duration<float>(currentTime - lastTime).count();
                 std::this_thread::sleep_for(std::chrono::microseconds(10));
