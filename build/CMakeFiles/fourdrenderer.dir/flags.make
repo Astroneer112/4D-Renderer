@@ -6,5 +6,5 @@ CXX_DEFINES =
 
 CXX_INCLUDES = -I/usr/include/SDL2
 
-CXX_FLAGS = -g -D_REENTRANT
+CXX_FLAGS = -O3 -DNDEBUG -D_REENTRANT -march=native -ffast-math
 

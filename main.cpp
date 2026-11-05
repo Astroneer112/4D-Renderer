@@ -9,8 +9,8 @@
 #include <sstream>
 #include <filesystem>
 
-int WIDTH = 100;
-int HEIGHT = 100;
+int WIDTH = 800;
+int HEIGHT = 800;
 std::vector<uint32_t> pixels(WIDTH*HEIGHT, 0xFF000000);
 int frame = 0;
 
@@ -22,7 +22,6 @@ const size_t RECORD_SIZE  = PIXEL_BYTES + sizeof(Cam);
 
 static bool camStateIsSane(const Cam& c){
     const float* v = reinterpret_cast<const float*>(&c);
-    for (int i = 0; i < 16; ++i) if (!std::isfinite(v[i])) return false;
     return std::abs(c.fwd.mag()-1) < 1e-3f && std::abs(c.up.mag()-1) < 1e-3f && std::abs(c.right.mag()-1) < 1e-3f;
 }
 
@@ -38,13 +37,13 @@ std::ifstream replayFile;
 
 
 
-
+vec4 InitCamPos;
 Cam cam = Cam{
-    vec4(-3, 1, 0, 0),
+    vec4(3, 1, 0, 0),
     vec4(1,0,0,0).normalize(),
     vec4(0,1,0,0).normalize(),
     vec4(0,0,1,0).normalize(),
-    vec4(0.05f, 0,0,0)
+    vec4(0.2f,0,0,0)
 };
 
 
@@ -56,38 +55,37 @@ Cam cam = Cam{
  vec4 right   = vec4(0,0,1,0).normalize();
  */
 
-static vec4 rotAB(const vec4& v, const vec4& a, const vec4& b){
-    float c = a.dot(b);
-    vec4 w = b - a * c;
-    float s = w.mag();
-    if(s < 1e-7f) return v;
-    w = w / s;
-    float va = v.dot(a), vw = v.dot(w);
-    return v + a * ((c - 1.0f) * va - s * vw) + w * (s * va + (c - 1.0f) * vw);
-}
-
 void moveCamera(sdf& s, Cam& c){
     float speed = c.vel.mag();
     if(speed < 1e-9f) return;
     vec4 dir = c.vel / speed;
     vec4 prevN = s.spaceNorm(c.pos);
     for(float moved = 0; moved < speed; ){
-        float step = std::min(speed - moved, 0.01f);
-        c.pos = c.pos + dir * step;  moved += step;
+        sdf_return here = s.space_sdf(c.pos);
+        vec4  v = s.feltToPhys(here, dir);
+        float f = std::min(speed - moved, 0.01f / v.mag());   // ≤ 0.01 of 4D movement per substep
+        c.pos = c.pos + v * f;
+        moved += f;
 
-        // snap back onto the surface
-        for(int i = 0; i < 3; ++i){
-            float d = s.space_sdf(c.pos).dist;
-            if(std::abs(d) < 1e-5f) break;
-            vec4 n = s.spaceNorm(c.pos);
-            if(n.mag() == 0.0f) break;
-            c.pos = c.pos - n * d;
+        c.pos = s.projectToSpace(c.pos);
+
+        // carry the whole frame (and prevN) around the arc's bend
+        sdf_return there = s.space_sdf(c.pos);
+        vec4 t0 = here.densityDir, t1 = there.densityDir;
+        if(here.spaceDensity < 1.0f && t0.mag() > 0.0f && t1.mag() > 0.0f){
+            if(t0.dot(t1) < 0.0f) t1 = t1 * -1.0f;
+            dir     = s.rotAB(dir,     t0, t1);
+            c.fwd   = s.rotAB(c.fwd,   t0, t1);
+            c.up    = s.rotAB(c.up,    t0, t1);
+            c.right = s.rotAB(c.right, t0, t1);
+            prevN   = s.rotAB(prevN,   t0, t1);   // so the normal-based step below sees only the leftover change
         }
+
         vec4 n = s.spaceNorm(c.pos);
         if(n.mag() > 0.0f){
             if(prevN.mag() > 0.0f){
-                c.fwd = rotAB(c.fwd, prevN, n);  c.up = rotAB(c.up, prevN, n);
-                c.right = rotAB(c.right, prevN, n);  dir = rotAB(dir, prevN, n);
+                c.fwd = s.rotAB(c.fwd, prevN, n);  c.up = s.rotAB(c.up, prevN, n);
+                c.right = s.rotAB(c.right, prevN, n);  dir = s.rotAB(dir, prevN, n);
             }
             prevN = n;
             auto tang = [&](vec4 v){ return v - n * v.dot(n); };
@@ -119,7 +117,7 @@ void pixel_space(std::atomic<int>& rowCounter, std::atomic<int>& rowsDone, sdf& 
                 if(dist.dist == -1){
                     pixels[y * WIDTH + x] = (uint32_t) 0x00000000;
                 } else{
-                    float brightness = 1.0f - (dist.dist / 10.0f);
+                    float brightness = 1.0f - (dist.dist / 50.0f);
                     if (brightness < 0.0f){brightness = 0.0f;}
                     if (brightness > 1.0f){brightness = 1.0f;}
 
@@ -297,6 +295,12 @@ int main(int argc, char **argv) {
         }
         else {
             moveCamera(scene1, cam);
+            /*
+            if(frame == 1){
+                InitCamPos = cam.pos;
+            } else if((cam.pos - InitCamPos).mag() <= 0.1){
+                quit = true;
+            }*/
 
             campos.store(cam.pos);
             std::cout << "(" << cam.pos.x << ", " << cam.pos.y << ", " << cam.pos.z << ", " << cam.pos.w << ")" << std::endl;
